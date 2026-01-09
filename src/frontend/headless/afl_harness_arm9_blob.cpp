@@ -42,7 +42,7 @@ namespace {
 constexpr std::uint32_t kMaxInputSize = 16 * 1024 * 1024;
 constexpr std::uint32_t kPersistentIterations = 1000;
 constexpr std::uint32_t kDeterministicRngSeed = 0x4A1F2B3C;
-constexpr std::uint32_t kRunTimeoutMs = 2;
+constexpr std::uint32_t kRunTimeoutMs = 10;
 }
 
 namespace {
