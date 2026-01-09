@@ -28,6 +28,94 @@
       "hidden": true
     },
     {
+      "name": "headless",
+      "inherits": "base",
+      "description": "Headless build",
+      "cacheVariables": {
+        "BUILD_QT_SDL": "OFF",
+        "BUILD_HEADLESS": "ON",
+        "ENABLE_OGLRENDERER": "OFF"
+      }
+    },
+    {
+      "name": "headless-fuzz",
+      "inherits": "headless",
+      "description": "Headless fuzzing build with sanitizers",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "headless-asan-ubsan",
+      "inherits": "headless",
+      "description": "Headless build with ASan+UBSan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "qt-asan-ubsan",
+      "inherits": "base",
+      "description": "Qt/SDL build with ASan+UBSan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_QT_SDL": "ON",
+        "BUILD_HEADLESS": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "headless-afl",
+      "inherits": "headless",
+      "description": "Headless AFL++ harness (instrumented)",
+      "cacheVariables": {
+        "BUILD_HEADLESS_AFL": "ON",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "${sourceDir}/third_party/aflplusplus/afl-clang-fast",
+        "CMAKE_CXX_COMPILER": "${sourceDir}/third_party/aflplusplus/afl-clang-fast++",
+        "CMAKE_C_FLAGS": "-fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "headless-afl-asan-ubsan",
+      "inherits": "headless-afl",
+      "description": "Headless AFL++ harness with ASan+UBSan",
+      "environment": {
+        "AFL_USE_ASAN": "1",
+        "AFL_USE_UBSAN": "1"
+      }
+    },
+    {
+      "name": "headless-afl-msan",
+      "inherits": "headless-afl",
+      "description": "Headless AFL++ harness with MSan",
+      "environment": {
+        "AFL_USE_MSAN": "1"
+      }
+    },
+    {
+      "name": "headless-afl-tsan",
+      "inherits": "headless-afl",
+      "description": "Headless AFL++ harness with TSan",
+      "environment": {
+        "AFL_USE_TSAN": "1"
+      }
+    },
+    {
+      "name": "headless-afl-cfi",
+      "inherits": "headless-afl",
+      "description": "Headless AFL++ harness with CFI",
+      "environment": {
+        "AFL_USE_CFISAN": "1"
+      }
+    },
+    {
       "name": "release",
       "inherits": "base",
       "description": "Generic release build",
@@ -130,6 +218,51 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "headless",
+      "configurePreset": "headless",
+      "displayName": "Headless"
+    },
+    {
+      "name": "headless-fuzz",
+      "configurePreset": "headless-fuzz",
+      "displayName": "Headless Fuzzing"
+    },
+    {
+      "name": "headless-asan-ubsan",
+      "configurePreset": "headless-asan-ubsan",
+      "displayName": "Headless ASan+UBSan"
+    },
+    {
+      "name": "qt-asan-ubsan",
+      "configurePreset": "qt-asan-ubsan",
+      "displayName": "Qt/SDL ASan+UBSan"
+    },
+    {
+      "name": "headless-afl",
+      "configurePreset": "headless-afl",
+      "displayName": "Headless AFL++"
+    },
+    {
+      "name": "headless-afl-asan-ubsan",
+      "configurePreset": "headless-afl-asan-ubsan",
+      "displayName": "Headless AFL++ ASan+UBSan"
+    },
+    {
+      "name": "headless-afl-msan",
+      "configurePreset": "headless-afl-msan",
+      "displayName": "Headless AFL++ MSan"
+    },
+    {
+      "name": "headless-afl-tsan",
+      "configurePreset": "headless-afl-tsan",
+      "displayName": "Headless AFL++ TSan"
+    },
+    {
+      "name": "headless-afl-cfi",
+      "configurePreset": "headless-afl-cfi",
+      "displayName": "Headless AFL++ CFI"
+    },
     {
       "name": "release",
       "configurePreset": "release",

@@ -1,0 +1,39 @@
+add_executable(headless
+    main.cpp
+    Platform.cpp
+    HeadlessPlatform.h
+    HeadlessInput.h
+)
+
+target_include_directories(headless PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+find_package(Threads REQUIRED)
+target_link_libraries(headless PRIVATE core)
+target_link_libraries(headless PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
+option(BUILD_HEADLESS_AFL "Build AFL++ headless fuzz harness" OFF)
+if (BUILD_HEADLESS_AFL)
+    add_executable(headless_afl
+        afl_harness_rom.cpp
+        Platform.cpp
+        HeadlessPlatform.h
+    )
+    target_include_directories(headless_afl PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/..")
+    target_link_libraries(headless_afl PRIVATE core)
+    target_link_libraries(headless_afl PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
+    add_executable(headless_afl_arm9_blob
+        afl_harness_arm9_blob.cpp
+        Platform.cpp
+        HeadlessPlatform.h
+    )
+    target_include_directories(headless_afl_arm9_blob PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/..")
+    target_link_libraries(headless_afl_arm9_blob PRIVATE core)
+    target_link_libraries(headless_afl_arm9_blob PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+endif()

@@ -110,3 +110,9 @@ add_subdirectory(src)
 if (BUILD_QT_SDL)
     add_subdirectory(src/frontend/qt_sdl)
 endif()
+
+option(BUILD_HEADLESS "Build headless frontend" ON)
+
+if (BUILD_HEADLESS)
+    add_subdirectory(src/frontend/headless)
+endif()
