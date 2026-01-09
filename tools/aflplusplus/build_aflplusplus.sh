@@ -12,8 +12,8 @@ fi
 cd "${afl_dir}"
 
 if [[ ! -f "afl-clang-fast" ]]; then
-  echo "Building AFL++ (source-only)..."
-  make source-only
+  echo "Building AFL++ (source-only PERFORMANCE=1)..."
+  make source-only PERFORMANCE=1
 fi
 
 echo "AFL++ build complete."
