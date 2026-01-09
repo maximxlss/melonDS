@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -8,7 +9,9 @@
 #include <vector>
 #include <csignal>
 #include <csetjmp>
-#include <sys/time.h>
+#include <ctime>
+#include <limits>
+#include <time.h>
 
 #include "Args.h"
 #include "MemConstants.h"
@@ -39,13 +42,15 @@ namespace {
 constexpr std::uint32_t kMaxInputSize = 16 * 1024 * 1024;
 constexpr std::uint32_t kPersistentIterations = 1000;
 constexpr std::uint32_t kDeterministicRngSeed = 0x4A1F2B3C;
-constexpr std::uint32_t kRunTimeoutMs = 5;
-constexpr std::uint32_t kTimeSliceSysCycles = 2048;
+constexpr std::uint32_t kRunTimeoutMs = 2;
 }
 
 namespace {
 sigjmp_buf gTimeoutJmp;
 volatile sig_atomic_t gTimeoutActive = 0;
+std::uint32_t gRunTimeoutMs = kRunTimeoutMs;
+timer_t gThreadTimer = {};
+bool gThreadTimerReady = false;
 
 void TimeoutHandler(int)
 {
@@ -66,21 +71,135 @@ void InstallTimeoutHandler()
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGVTALRM, &sa, nullptr);
+
+    sigevent sev {};
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGVTALRM;
+    if (timer_create(CLOCK_THREAD_CPUTIME_ID, &sev, &gThreadTimer) != 0)
+    {
+        std::perror("timer_create");
+        std::exit(1);
+    }
+    gThreadTimerReady = true;
 }
 
 void ArmTimeoutTimer()
 {
-    struct itimerval timer {};
-    timer.it_value.tv_sec = 0;
-    timer.it_value.tv_usec = static_cast<suseconds_t>(kRunTimeoutMs) * 1000;
-    setitimer(ITIMER_VIRTUAL, &timer, nullptr);
+    if (!gThreadTimerReady)
+        return;
+    itimerspec timer {};
+    timer.it_value.tv_sec = gRunTimeoutMs / 1000u;
+    timer.it_value.tv_nsec = static_cast<long>(gRunTimeoutMs % 1000u) * 1000000L;
+    timer_settime(gThreadTimer, 0, &timer, nullptr);
 }
 
 void DisarmTimeoutTimer()
 {
-    struct itimerval timer {};
-    setitimer(ITIMER_VIRTUAL, &timer, nullptr);
+    if (!gThreadTimerReady)
+        return;
+    itimerspec timer {};
+    timer_settime(gThreadTimer, 0, &timer, nullptr);
 }
+}
+
+struct HarnessArgs
+{
+    fs::path baseRomPath;
+    fs::path timingInputPath;
+    bool timingMode = false;
+    std::uint32_t timeoutMs = kRunTimeoutMs;
+};
+
+static std::uint64_t GetCpuTimeNs()
+{
+    timespec ts {};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0)
+        return 0;
+    return static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ull
+        + static_cast<std::uint64_t>(ts.tv_nsec);
+}
+
+static bool ParseTimeoutMs(const char* value, std::uint32_t& out)
+{
+    if (!value || !*value)
+        return false;
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(value, &end, 10);
+    if (!end || *end != '\0' || parsed == 0 || parsed > 60000ul)
+        return false;
+    out = static_cast<std::uint32_t>(parsed);
+    return true;
+}
+
+static void PrintUsage(const char* argv0)
+{
+    std::fprintf(stderr,
+        "Usage: %s <base_rom.nds> [--time-limit-ms N] [--timing <arm9_blob.bin>]\n",
+        argv0);
+}
+
+static bool ParseArgs(int argc, char** argv, HarnessArgs& out)
+{
+    for (int i = 1; i < argc; i++)
+    {
+        const char* arg = argv[i];
+        if (std::strcmp(arg, "--help") == 0)
+        {
+            PrintUsage(argv[0]);
+            return false;
+        }
+        if (std::strcmp(arg, "--timing") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                std::fprintf(stderr, "--timing requires an input blob path.\n");
+                return false;
+            }
+            out.timingMode = true;
+            out.timingInputPath = fs::absolute(argv[++i]);
+            continue;
+        }
+        if (std::strcmp(arg, "--time-limit-ms") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                std::fprintf(stderr, "--time-limit-ms requires a value.\n");
+                return false;
+            }
+            if (!ParseTimeoutMs(argv[++i], out.timeoutMs))
+            {
+                std::fprintf(stderr, "Invalid --time-limit-ms value.\n");
+                return false;
+            }
+            continue;
+        }
+        if (arg[0] == '-')
+        {
+            std::fprintf(stderr, "Unknown option: %s\n", arg);
+            return false;
+        }
+        if (out.baseRomPath.empty())
+        {
+            out.baseRomPath = fs::absolute(arg);
+            continue;
+        }
+        std::fprintf(stderr, "Unexpected argument: %s\n", arg);
+        return false;
+    }
+
+    if (out.baseRomPath.empty())
+    {
+        PrintUsage(argv[0]);
+        return false;
+    }
+
+    if (out.timingMode && out.timingInputPath.empty())
+    {
+        std::fprintf(stderr, "Timing mode requires an ARM9 blob input.\n");
+        return false;
+    }
+
+    return true;
 }
 
 static bool ReadFile(const fs::path& path, std::vector<melonDS::u8>& out)
@@ -157,14 +276,14 @@ static bool WriteArm9Blob(melonDS::NDS& nds, const melonDS::NDSHeader& header,
 
 int main(int argc, char** argv)
 {
-    if (argc < 2)
-    {
-        std::fprintf(stderr, "Usage: %s <base_rom.nds>\n", argv[0]);
+    HarnessArgs args;
+    if (!ParseArgs(argc, argv, args))
         return 1;
-    }
+
+    gRunTimeoutMs = args.timeoutMs;
 
     fs::path exePath = fs::absolute(argv[0]);
-    fs::path baseRomPath = fs::absolute(argv[1]);
+    fs::path baseRomPath = args.baseRomPath;
     melonDS::Platform::Headless_SetLocalBasePath(exePath.parent_path());
 
     std::vector<melonDS::u8> romData;
@@ -220,6 +339,72 @@ int main(int argc, char** argv)
 
     InstallTimeoutHandler();
 
+    auto runOnce = [&](const unsigned char* data, std::uint32_t len, bool reportTiming) -> bool
+    {
+        melonDS::Savestate loadState(baseBuf, baseLen, false);
+        if (!nds->DoSavestate(&loadState) || loadState.Error)
+            return false;
+
+        nds->JIT.ResetBlockCache();
+        nds->Start();
+
+        if (!WriteArm9Blob(*nds, header, data, len))
+            return false;
+
+        nds->ARM9.RNGSeed = kDeterministicRngSeed;
+        nds->ARM9.JumpTo(header.ARM9EntryAddress);
+
+        melonDS::NDS::Current = nds.get();
+        nds->CurCPU = 0;
+
+        volatile std::uint64_t start_ns = 0;
+        volatile std::uint64_t end_ns = 0;
+        gTimeoutActive = 1;
+        int jumped = sigsetjmp(gTimeoutJmp, 1);
+        if (jumped == 0)
+        {
+            nds->ARM9Target = std::numeric_limits<decltype(nds->ARM9Target)>::max();
+            if (reportTiming)
+                start_ns = GetCpuTimeNs();
+            ArmTimeoutTimer();
+            nds->ARM9.Execute<melonDS::CPUExecuteMode::JIT>();
+            if (reportTiming)
+                end_ns = GetCpuTimeNs();
+        }
+        gTimeoutActive = 0;
+        DisarmTimeoutTimer();
+
+        if (reportTiming)
+        {
+            if (jumped != 0)
+                end_ns = GetCpuTimeNs();
+            double cpu_ms = static_cast<double>(end_ns - start_ns) / 1e6;
+            std::printf("timing: cpu_ms=%.3f timed_out=%d timeout_ms=%u input_len=%u\n",
+                cpu_ms, jumped != 0 ? 1 : 0, gRunTimeoutMs, len);
+            std::fflush(stdout);
+        }
+
+        return true;
+    };
+
+    if (args.timingMode)
+    {
+        std::vector<melonDS::u8> inputData;
+        if (!ReadFile(args.timingInputPath, inputData))
+        {
+            std::fprintf(stderr, "Failed to read ARM9 blob: %s\n", args.timingInputPath.string().c_str());
+            return 1;
+        }
+        if (inputData.empty())
+        {
+            std::fprintf(stderr, "ARM9 blob is empty: %s\n", args.timingInputPath.string().c_str());
+            return 1;
+        }
+        std::uint32_t len = static_cast<std::uint32_t>(std::min<std::size_t>(inputData.size(), maxInputSize));
+        runOnce(inputData.data(), len, true);
+        return 0;
+    }
+
     unsigned char* buf = __AFL_FUZZ_TESTCASE_BUF;
     while (__AFL_LOOP(kPersistentIterations))
     {
@@ -230,31 +415,7 @@ int main(int argc, char** argv)
         if (len > maxInputSize)
             len = maxInputSize;
 
-        melonDS::Savestate loadState(baseBuf, baseLen, false);
-        if (!nds->DoSavestate(&loadState) || loadState.Error)
-            continue;
-
-        nds->Start();
-
-        if (!WriteArm9Blob(*nds, header, buf, len))
-            continue;
-
-        nds->ARM9.RNGSeed = kDeterministicRngSeed;
-        nds->ARM9.JumpTo(header.ARM9EntryAddress);
-
-        melonDS::NDS::Current = nds.get();
-        nds->CurCPU = 0;
-
-        gTimeoutActive = 1;
-        if (sigsetjmp(gTimeoutJmp, 1) == 0)
-        {
-            ArmTimeoutTimer();
-            const std::uint64_t slice_ticks = static_cast<std::uint64_t>(kTimeSliceSysCycles) << nds->ARM9ClockShift;
-            nds->ARM9Target = nds->ARM9Timestamp + slice_ticks;
-            nds->ARM9.Execute<melonDS::CPUExecuteMode::JIT>();
-        }
-        gTimeoutActive = 0;
-        DisarmTimeoutTimer();
+        runOnce(buf, len, false);
     }
 
     return 0;

@@ -43,8 +43,8 @@
       "description": "Headless fuzzing build with sanitizers",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
-        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
       }
     },
     {
@@ -78,8 +78,8 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_COMPILER": "${sourceDir}/third_party/aflplusplus/afl-clang-fast",
         "CMAKE_CXX_COMPILER": "${sourceDir}/third_party/aflplusplus/afl-clang-fast++",
-        "CMAKE_C_FLAGS": "-fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer"
+        "CMAKE_C_FLAGS": "-fno-omit-frame-pointer -fno-sanitize=leak",
+        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -fno-sanitize=leak"
       }
     },
     {
@@ -89,6 +89,20 @@
       "environment": {
         "AFL_USE_ASAN": "1",
         "AFL_USE_UBSAN": "1"
+      }
+    },
+    {
+      "name": "headless-afl-asan-ubsan-clang",
+      "inherits": "headless",
+      "description": "Headless harness with ASan+UBSan (no AFL compiler)",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=0"
+      },
+      "cacheVariables": {
+        "BUILD_HEADLESS_AFL": "ON",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
       }
     },
     {
@@ -247,6 +261,11 @@
       "name": "headless-afl-asan-ubsan",
       "configurePreset": "headless-afl-asan-ubsan",
       "displayName": "Headless AFL++ ASan+UBSan"
+    },
+    {
+      "name": "headless-afl-asan-ubsan-clang",
+      "configurePreset": "headless-afl-asan-ubsan-clang",
+      "displayName": "Headless Harness ASan+UBSan (no AFL compiler)"
     },
     {
       "name": "headless-afl-msan",

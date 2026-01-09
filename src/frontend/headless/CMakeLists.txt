@@ -36,4 +36,12 @@ if (BUILD_HEADLESS_AFL)
         "${CMAKE_CURRENT_SOURCE_DIR}/..")
     target_link_libraries(headless_afl_arm9_blob PRIVATE core)
     target_link_libraries(headless_afl_arm9_blob PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
+    add_custom_target(time_harnesses
+        COMMAND "${CMAKE_SOURCE_DIR}/tools/aflplusplus/time_harnesses.py"
+            --arm9-harness "$<TARGET_FILE:headless_afl_arm9_blob>"
+        DEPENDS headless_afl headless_afl_arm9_blob
+        USES_TERMINAL
+        VERBATIM
+    )
 endif()

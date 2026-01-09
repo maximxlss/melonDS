@@ -14,6 +14,9 @@ compile_commands.json
 .cache
 third_party/aflplusplus/
 /out
+afl_out/
+seeds/arm9_*.bin
+test_rom.nds
 
 *.exe
 
