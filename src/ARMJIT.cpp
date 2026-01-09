@@ -232,8 +232,13 @@ INSTANTIATE_SLOWMEM(1)
 
 ARMJIT::~ARMJIT() noexcept
 {
-    JitEnableWrite();
-    ResetBlockCache();
+    // HACK: removed this since it causes UAF:
+    // In destruction of `NDS`: `ARMJIT::~ARMJIT()` -> `ARMJIT::ResetBlockCache()` ->
+    // -> `ARMJIT_Memory::Reset()` -> `ARMJIT_Memory::Mapping::Unmap()`,
+    // which uses `nds.ARM9.DTCMBase`, which was already deallocated.
+
+    // JitEnableWrite();
+    // ResetBlockCache();
 }
 
 void ARMJIT::Reset() noexcept
