@@ -4,7 +4,7 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 afllib_dir="${root_dir}/third_party/aflplusplus"
 
-preset="headless-afl-asan-ubsan"
+preset="headless-afl-lto-asan-ubsan"
 seed_dir="${root_dir}/seeds"
 out_dir="${root_dir}/afl_out"
 instances=""
@@ -20,7 +20,7 @@ usage() {
 Usage: $0 [--preset NAME] [--seed-dir DIR] [--out-dir DIR] [--instances N] [--target PATH] [--base-rom PATH] [--no-build] [--no-seed-build] [--output-mode MODE] [--log-dir DIR] -- [target args...]
 
 Defaults:
-  --preset    headless-afl-asan-ubsan
+  --preset    headless-afl-lto-asan-ubsan
   --seed-dir  \\${repo}/seeds
   --out-dir   \\${repo}/afl_out
   --target    build/\\${preset}/headless_afl_arm9_blob

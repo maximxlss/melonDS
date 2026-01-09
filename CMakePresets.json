@@ -83,9 +83,27 @@
       }
     },
     {
+      "name": "headless-afl-lto",
+      "inherits": "headless-afl",
+      "description": "Headless AFL++ harness (LTO instrumentation)",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "${sourceDir}/third_party/aflplusplus/afl-clang-lto",
+        "CMAKE_CXX_COMPILER": "${sourceDir}/third_party/aflplusplus/afl-clang-lto++"
+      }
+    },
+    {
       "name": "headless-afl-asan-ubsan",
       "inherits": "headless-afl",
       "description": "Headless AFL++ harness with ASan+UBSan",
+      "environment": {
+        "AFL_USE_ASAN": "1",
+        "AFL_USE_UBSAN": "1"
+      }
+    },
+    {
+      "name": "headless-afl-lto-asan-ubsan",
+      "inherits": "headless-afl-lto",
+      "description": "Headless AFL++ harness with ASan+UBSan (LTO)",
       "environment": {
         "AFL_USE_ASAN": "1",
         "AFL_USE_UBSAN": "1"
@@ -258,9 +276,19 @@
       "displayName": "Headless AFL++"
     },
     {
+      "name": "headless-afl-lto",
+      "configurePreset": "headless-afl-lto",
+      "displayName": "Headless AFL++ (LTO)"
+    },
+    {
       "name": "headless-afl-asan-ubsan",
       "configurePreset": "headless-afl-asan-ubsan",
       "displayName": "Headless AFL++ ASan+UBSan"
+    },
+    {
+      "name": "headless-afl-lto-asan-ubsan",
+      "configurePreset": "headless-afl-lto-asan-ubsan",
+      "displayName": "Headless AFL++ ASan+UBSan (LTO)"
     },
     {
       "name": "headless-afl-asan-ubsan-clang",
