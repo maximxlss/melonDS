@@ -544,6 +544,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     if (!localAddr)
     {
         Log(LogLevel::Warn, "trying to compile non executable code? %x\n", blockAddr);
+        return;
     }
 
     auto& map = cpu->Num == 0 ? JitBlocks9 : JitBlocks7;
@@ -619,7 +620,11 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         instrValues[numInstrs++] = instrs[i].Instr;
 
         u32 translatedAddr = LocaliseCodeAddress(cpu->Num, instrs[i].Addr);
-        assert(translatedAddr >> 27);
+        if (!translatedAddr)
+        {
+            Log(LogLevel::Warn, "block crosses into non executable memory? %x\n", instrs[i].Addr);
+            break;
+        }
         u32 translatedAddrRounded = translatedAddr & ~0x1FF;
         if (i == 0 || translatedAddrRounded != addressRanges[numAddressRanges - 1])
         {
@@ -714,6 +719,7 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
             if (!translatedAddr)
             {
                 Log(LogLevel::Warn,"literal in non executable memory?\n");
+                break;
             }
             if (InvalidLiterals.Find(translatedAddr) == -1)
             {
@@ -920,6 +926,11 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         assert(addressMasks[j] != 0);
 
         AddressRange* region = CodeMemRegions[addressRanges[j] >> 27];
+        if (!region)
+        {
+            Log(LogLevel::Warn, "jit address range in non executable memory? %x\n", addressRanges[j]);
+            continue;
+        }
 
         if (!PageContainsCode(&region[(addressRanges[j] & 0x7FFF000 & ~(Memory.PageSize - 1)) / 512], Memory.PageSize))
             Memory.SetCodeProtection(addressRanges[j] >> 27, addressRanges[j] & 0x7FFFFFF, true);
