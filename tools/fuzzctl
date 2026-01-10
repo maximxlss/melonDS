@@ -432,6 +432,82 @@ def cmd_calibrate(args):
         print(proc.stdout, end="")
 
 
+def find_queue_dir(out_dir: Path) -> Path | None:
+    master_queue = out_dir / "master" / "queue"
+    if master_queue.is_dir():
+        return master_queue
+    direct_queue = out_dir / "queue"
+    if direct_queue.is_dir():
+        return direct_queue
+    return None
+
+
+def cmd_cmin(args):
+    if not AFL_DIR.is_dir():
+        die(f"AFL++ directory not found: {AFL_DIR}")
+    afl_cmin = AFL_DIR / ("afl-cmin.py" if not args.bash else "afl-cmin.bash")
+    if not afl_cmin.is_file():
+        die(f"AFL++ afl-cmin not found: {afl_cmin}")
+
+    out_dir = Path(args.out_dir)
+    in_dir = Path(args.in_dir) if args.in_dir else None
+    if in_dir is None:
+        in_dir = find_queue_dir(Path(args.fuzz_out_dir))
+    if not in_dir or not in_dir.is_dir():
+        die("Queue dir not found; pass --in-dir explicitly.")
+
+    if out_dir.exists() and any(out_dir.iterdir()):
+        die(f"Output dir is not empty: {out_dir}")
+    ensure_dir(out_dir)
+
+    profile, sanitizer = resolve_profile_sanitizer(args, Path(args.fuzz_out_dir))
+    if profile == "lto":
+        ensure_afl_lto_tools()
+    preset = preset_for("afl", profile, sanitizer)
+
+    cmake_build(preset, "headless_afl_arm9_blob",
+                clean_build=args.clean_build,
+                dry_run=args.dry_run,
+                verbose=args.verbose)
+
+    target = ROOT / "build" / preset / "headless_afl_arm9_blob"
+    if not args.dry_run and not target.is_file():
+        die(f"Fuzz target not found: {target}")
+
+    base_rom = Path(args.base_rom)
+    if not base_rom.is_file():
+        die(f"Base ROM not found: {base_rom}")
+
+    cmd = [
+        str(afl_cmin),
+        "-i",
+        str(in_dir),
+        "-o",
+        str(out_dir),
+        "-t",
+        str(args.afl_timeout_ms),
+        "-T",
+        str(args.workers),
+        "--",
+        str(target),
+        str(base_rom),
+    ]
+    if args.time_limit_ms:
+        cmd += ["--time-limit-ms", str(args.time_limit_ms)]
+    if args.cycle_limit:
+        cmd += ["--cycle-limit", str(args.cycle_limit)]
+
+    env = os.environ.copy()
+    env["AFL_SKIP_CPUFREQ"] = "1"
+    if not args.allow_persistent:
+        env["AFL_NO_PERSISTENT"] = "1"
+    if sanitizer == "asan-ubsan":
+        ensure_env_opt(env, "ASAN_OPTIONS", "abort_on_error=1")
+        ensure_env_opt(env, "ASAN_OPTIONS", "detect_leaks=0")
+        ensure_env_opt(env, "ASAN_OPTIONS", "symbolize=0")
+    run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose, env=env)
+
+
 def cmd_fuzz(args):
     if not AFL_DIR.is_dir():
         die(f"AFL++ directory not found: {AFL_DIR}")
@@ -441,8 +517,21 @@ def cmd_fuzz(args):
 
     out_dir = Path(args.out_dir)
     seed_dir = Path(args.seed_dir)
-    ensure_dir(out_dir)
+    if args.continue_run:
+        if not out_dir.is_dir():
+            die(f"Output directory not found for --continue: {out_dir}")
+        if not find_fuzzer_stats(out_dir):
+            die(f"No existing fuzzer_stats found in: {out_dir}")
+    else:
+        ensure_dir(out_dir)
     ensure_dir(out_dir / "logs")
+
+    if args.continue_run:
+        meta = read_meta(out_dir)
+        if meta and args.base_rom == str(DEFAULT_BASE_ROM):
+            meta_base = meta.get("base_rom")
+            if meta_base:
+                args.base_rom = meta_base
 
     sand_sanitizers = parse_sanitizer_list(args.sand) if args.sand else []
     if sand_sanitizers:
@@ -480,15 +569,19 @@ def cmd_fuzz(args):
             sand_targets.append(sand_target)
 
     base_rom = Path(args.base_rom)
-    if not base_rom.is_file():
-        build_seeds(rebuild=False, dry_run=args.dry_run, verbose=args.verbose)
-    if not base_rom.is_file():
-        die(f"Base ROM not found: {base_rom}")
+    if args.continue_run:
+        if not base_rom.is_file():
+            die(f"Base ROM not found: {base_rom}")
+    else:
+        if not base_rom.is_file():
+            build_seeds(rebuild=False, dry_run=args.dry_run, verbose=args.verbose)
+        if not base_rom.is_file():
+            die(f"Base ROM not found: {base_rom}")
 
-    if not any(seed_dir.glob("*")):
-        build_seeds(rebuild=False, dry_run=args.dry_run, verbose=args.verbose)
-    if not any(seed_dir.glob("*")):
-        die(f"Seed directory is empty: {seed_dir}")
+        if not any(seed_dir.glob("*")):
+            build_seeds(rebuild=False, dry_run=args.dry_run, verbose=args.verbose)
+        if not any(seed_dir.glob("*")):
+            die(f"Seed directory is empty: {seed_dir}")
 
     instances = args.instances
     if instances < 1:
@@ -532,10 +625,11 @@ def cmd_fuzz(args):
     try:
         for i in range(1, instances + 1):
             role = ["-M", "master"] if i == 1 else ["-S", f"slave{i}"]
+            input_dir = "-" if args.continue_run else str(seed_dir)
             cmd = [
                 str(afl_fuzz),
                 "-i",
-                str(seed_dir),
+                input_dir,
                 "-o",
                 str(out_dir),
                 *role,
@@ -619,11 +713,20 @@ def cmd_repro(args):
     run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose, env=env, check=False)
 
 
-def iter_crash_inputs(out_dir: Path) -> list[Path]:
+def iter_crash_inputs(out_dir: Path, *, scan_all: bool) -> list[Path]:
     crash_inputs = []
-    for crash_dir in out_dir.glob("**/crashes"):
-        if not crash_dir.is_dir():
-            continue
+    crash_dirs = []
+    if not scan_all:
+        master = out_dir / "master" / "crashes"
+        if master.is_dir():
+            crash_dirs = [master]
+        else:
+            direct = out_dir / "crashes"
+            if direct.is_dir():
+                crash_dirs = [direct]
+    if not crash_dirs:
+        crash_dirs = [d for d in out_dir.glob("**/crashes") if d.is_dir()]
+    for crash_dir in crash_dirs:
         for entry in crash_dir.iterdir():
             if not entry.is_file():
                 continue
@@ -633,18 +736,23 @@ def iter_crash_inputs(out_dir: Path) -> list[Path]:
     return sorted(crash_inputs)
 
 
-def dedupe_inputs(paths: list[Path]) -> list[Path]:
+def dedupe_inputs(paths: list[Path], *, mode: str) -> list[Path]:
     seen = set()
     unique = []
     for path in paths:
-        try:
-            data = path.read_bytes()
-        except OSError:
+        key = None
+        if mode == "sig":
+            m = re.search(r"sig:([^,]+)", path.name)
+            key = m.group(1) if m else path.name
+        else:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            key = (len(data), hash(data))
+        if key in seen:
             continue
-        digest = (len(data), hash(data))
-        if digest in seen:
-            continue
-        seen.add(digest)
+        seen.add(key)
         unique.append(path)
     return unique
 
@@ -654,7 +762,10 @@ def cmd_repro_all(args):
     if not out_dir.is_dir():
         die(f"Output dir not found: {out_dir}")
 
-    crash_inputs = dedupe_inputs(iter_crash_inputs(out_dir))
+    crash_inputs = dedupe_inputs(
+        iter_crash_inputs(out_dir, scan_all=args.scan_all),
+        mode=args.dedupe,
+    )
     if not crash_inputs:
         die(f"No crash inputs found under: {out_dir}")
 
@@ -859,6 +970,34 @@ def main() -> int:
     calibrate.add_argument("--rebuild", action="store_true", help="Clean and rebuild seeds")
     calibrate.set_defaults(func=cmd_calibrate)
 
+    cmin = sub.add_parser(
+        "cmin",
+        help="Minimize corpus with afl-cmin",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(cmin)
+    cmin.add_argument("--fuzz-out-dir", default=str(OUT_ROOT / "fuzz"),
+                      help="AFL++ output dir to infer queue when --in-dir is not set")
+    cmin.add_argument("--in-dir",
+                      help="Input queue dir (defaults to master/queue under --fuzz-out-dir)")
+    cmin.add_argument("--out-dir", default=str(OUT_ROOT / "cmin"),
+                      help="Output dir for minimized corpus (must be empty)")
+    cmin.add_argument("--base-rom", default=str(DEFAULT_BASE_ROM),
+                      help="Base ROM path")
+    cmin.add_argument("--cycle-limit", type=int,
+                      help="ARM9 cycle budget per input")
+    cmin.add_argument("--time-limit-ms", type=int,
+                      help="Override harness time limit")
+    cmin.add_argument("--afl-timeout-ms", type=int, default=2000,
+                      help="AFL++ per-input timeout (ms)")
+    cmin.add_argument("--workers", default="all",
+                      help="afl-cmin workers (-T), use 'all' for max parallelism")
+    cmin.add_argument("--allow-persistent", action="store_true",
+                      help="Allow AFL persistent mode (can hang with some targets)")
+    cmin.add_argument("--bash", action="store_true",
+                      help="Use afl-cmin.bash instead of afl-cmin.py")
+    cmin.set_defaults(func=cmd_cmin)
+
     fuzz = sub.add_parser(
         "fuzz",
         help="Run AFL++ master + slaves",
@@ -873,6 +1012,10 @@ def main() -> int:
                       help="Seed directory")
     fuzz.add_argument("--base-rom", default=str(DEFAULT_BASE_ROM),
                       help="Base ROM path")
+    fuzz.add_argument("--continue", dest="continue_run", action="store_true",
+                      help="Resume an existing AFL++ output dir")
+    fuzz.add_argument("--resume", dest="continue_run", action="store_true",
+                      help="Alias for --continue")
     fuzz.add_argument("--cycle-limit", type=int, default=DEFAULT_FUZZ_CYCLE_LIMIT,
                       help="ARM9 cycle budget per input")
     fuzz.add_argument("--afl-timeout-ms", type=int, default=2000,
@@ -900,6 +1043,10 @@ def main() -> int:
     add_common(repro_all)
     repro_all.add_argument("--out-dir", default=str(OUT_ROOT / "fuzz"),
                            help="AFL++ output dir to scan for crashes")
+    repro_all.add_argument("--scan-all", action="store_true",
+                           help="Scan all nested crashes/ dirs (default: only master/crashes if present)")
+    repro_all.add_argument("--dedupe", choices=["content", "sig"], default="sig",
+                           help="Deduplicate crash inputs by content hash or AFL sig")
     repro_all.add_argument("--base-rom", help="Base ROM path")
     repro_all.add_argument("--sanitizers",
                            help="Comma list of sanitizers to try after the clean build (e.g. asan-ubsan,cfi)")
