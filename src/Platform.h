@@ -72,6 +72,7 @@ enum StopReason {
 void SignalStop(StopReason reason, void* userdata);
 
 
+
 /**
  * Denotes how a file will be opened and accessed.
  * Flags may or may not correspond to the operating system's file API.

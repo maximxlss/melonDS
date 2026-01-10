@@ -3435,6 +3435,15 @@ void NDS::ARM9IOWrite16(u32 addr, u16 val)
     case 0x040001B8: ROMSeed0[4] = val & 0x7F; return;
     case 0x040001BA: ROMSeed1[4] = val & 0x7F; return;
 
+#ifdef MELON_FUZZ_FAST
+    case 0x040001C0:
+        SPI.WriteCnt(val);
+        return;
+    case 0x040001C2:
+        SPI.WriteData(val & 0xFF);
+        return;
+#endif
+
     case 0x04000204:
         {
             u16 oldVal = ExMemCnt[0];
@@ -3614,6 +3623,13 @@ void NDS::ARM9IOWrite32(u32 addr, u32 val)
 
     case 0x040001B0: *(u32*)&ROMSeed0[0] = val; return;
     case 0x040001B4: *(u32*)&ROMSeed1[0] = val; return;
+
+#ifdef MELON_FUZZ_FAST
+    case 0x040001C0:
+        SPI.WriteCnt(val & 0xFFFF);
+        SPI.WriteData((val >> 16) & 0xFF);
+        return;
+#endif
 
     case 0x04000208: IME[0] = val & 0x1; UpdateIRQ(0); return;
     case 0x04000210: IE[0] = val; UpdateIRQ(0); return;

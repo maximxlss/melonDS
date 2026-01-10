@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT_ROOT = ROOT / "out" / "fuzzctl"
+SEED_TOOL_DIR = ROOT / "tools" / "blocksds" / "jit_seeds"
+SEED_ROM_DIR = SEED_TOOL_DIR / "build"
+SEED_BLOB_DIR = ROOT / "seeds"
+DEFAULT_BASE_ROM = SEED_ROM_DIR / "seed_arith.nds"
+NDSTOOL = Path("/opt/blocksds/core/tools/ndstool/ndstool")
+BLOCKSDS_ARM7 = Path("/opt/blocksds/core/sys/arm7/main_core/arm7_maxmod.elf")
+BLOCKSDS_ICON = Path("/opt/blocksds/core/sys/icon.gif")
+AFL_DIR = ROOT / "third_party" / "aflplusplus"
+DEFAULT_FUZZ_CYCLE_LIMIT = 300000
+
+
+SANITIZERS = ["none", "asan-ubsan", "msan", "cfi"]
+PROFILES = ["fast", "lto"]
+AUTO = "auto"
+
+
+def die(msg: str) -> None:
+    print(msg, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def run_cmd(cmd, *, cwd=None, env=None, dry_run=False, verbose=False, capture=False):
+    if verbose or dry_run:
+        print("+ " + " ".join(shlex.quote(str(c)) for c in cmd))
+    if dry_run:
+        return None
+    if capture:
+        return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
+    return subprocess.run(cmd, cwd=cwd, env=env, check=True)
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def cmake_build(preset: str, target: str | None, *, clean_build=False, dry_run=False, verbose=False, env=None):
+    if clean_build:
+        build_dir = ROOT / "build" / preset
+        if build_dir.exists():
+            if verbose:
+                print(f"+ rm -rf {build_dir}")
+            if not dry_run:
+                for root, dirs, files in os.walk(build_dir, topdown=False):
+                    for name in files:
+                        Path(root, name).unlink(missing_ok=True)
+                    for name in dirs:
+                        Path(root, name).rmdir()
+                build_dir.rmdir()
+    run_cmd(["cmake", "--preset", preset], dry_run=dry_run, verbose=verbose, env=env)
+    build_cmd = ["cmake", "--build", "--preset", preset]
+    if target:
+        build_cmd += ["--target", target]
+    run_cmd(build_cmd, dry_run=dry_run, verbose=verbose, env=env)
+
+
+def build_seeds(*, rebuild=False, dry_run=False, verbose=False):
+    if not SEED_TOOL_DIR.is_dir():
+        die(f"BlocksDS seed tool not found: {SEED_TOOL_DIR}")
+    if rebuild:
+        run_cmd(["make", "clean"], cwd=SEED_TOOL_DIR, dry_run=dry_run, verbose=verbose)
+    run_cmd(["make", "seeds"], cwd=SEED_TOOL_DIR, dry_run=dry_run, verbose=verbose)
+
+
+def preset_for(toolchain: str, profile: str, sanitizer: str) -> str:
+    if toolchain == "afl":
+        base = "headless-afl-lto" if profile == "lto" else "headless-afl"
+        if sanitizer == "none":
+            return base
+        if sanitizer == "asan-ubsan":
+            return f"{base}-asan-ubsan"
+        return f"{base}-{sanitizer}"
+    if toolchain == "clean":
+        base = "headless-harness-lto" if profile == "lto" else "headless-harness"
+        if sanitizer == "none":
+            return base
+        if sanitizer == "asan-ubsan":
+            return f"{base}-asan-ubsan"
+        return f"{base}-{sanitizer}"
+    if toolchain == "qt":
+        base = "qt-lto" if profile == "lto" else "qt"
+        if sanitizer == "none":
+            return base
+        if sanitizer == "asan-ubsan":
+            return f"{base}-asan-ubsan"
+        return f"{base}-{sanitizer}"
+    raise ValueError(f"Unknown toolchain: {toolchain}")
+
+
+def parse_profile_sanitizer_from_preset(preset: str) -> tuple[str | None, str | None]:
+    profile = "lto" if "lto" in preset else "fast"
+    sanitizer = "none"
+    if "asan-ubsan" in preset:
+        sanitizer = "asan-ubsan"
+    elif "msan" in preset:
+        sanitizer = "msan"
+    elif "cfi" in preset:
+        sanitizer = "cfi"
+    return profile, sanitizer
+
+
+def read_meta(out_dir: Path) -> dict | None:
+    meta = out_dir / "fuzzctl.meta.json"
+    if not meta.is_file():
+        return None
+    try:
+        return json.loads(meta.read_text())
+    except Exception:
+        return None
+
+
+def parse_fuzzer_stats(path: Path) -> dict:
+    data = {}
+    for line in path.read_text().splitlines():
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        data[key.strip()] = val.strip()
+    return data
+
+
+def find_fuzzer_stats(out_dir: Path) -> Path | None:
+    direct = out_dir / "fuzzer_stats"
+    if direct.is_file():
+        return direct
+    for child in out_dir.glob("*/*/fuzzer_stats"):
+        return child
+    for child in out_dir.glob("*/fuzzer_stats"):
+        return child
+    return None
+
+
+def detect_from_fuzzer_stats(out_dir: Path) -> tuple[str | None, str | None, str | None, str | None]:
+    stats_path = find_fuzzer_stats(out_dir)
+    if not stats_path:
+        return None, None, None, None
+    stats = parse_fuzzer_stats(stats_path)
+    cmdline = stats.get("command_line")
+    if not cmdline:
+        return None, None, None, None
+    m = re.search(r"build/([^/]+)/headless_afl_arm9_blob", cmdline)
+    preset = m.group(1) if m else None
+    profile = None
+    sanitizer = None
+    if preset:
+        profile, sanitizer = parse_profile_sanitizer_from_preset(preset)
+    base_rom = None
+    try:
+        parts = shlex.split(cmdline)
+        for i, part in enumerate(parts):
+            if part.endswith("headless_afl_arm9_blob") and i + 1 < len(parts):
+                base_rom = parts[i + 1]
+                break
+    except Exception:
+        base_rom = None
+    return profile, sanitizer, preset, base_rom
+
+
+def resolve_profile_sanitizer(args, out_dir: Path | None) -> tuple[str, str]:
+    profile = None if args.profile == AUTO else args.profile
+    sanitizer = None if args.sanitizer == AUTO else args.sanitizer
+    if profile and sanitizer:
+        return profile, sanitizer
+    if out_dir:
+        meta = read_meta(out_dir)
+        if meta:
+            profile = profile or meta.get("profile")
+            sanitizer = sanitizer or meta.get("sanitizer")
+        if not profile or not sanitizer:
+            det_profile, det_sanitizer, _, _ = detect_from_fuzzer_stats(out_dir)
+            profile = profile or det_profile
+            sanitizer = sanitizer or det_sanitizer
+    profile = profile or "fast"
+    sanitizer = sanitizer or "none"
+    return profile, sanitizer
+
+
+def resolve_profile(args, out_dir: Path | None) -> str:
+    if args.profile != AUTO:
+        return args.profile
+    profile = None
+    if out_dir:
+        meta = read_meta(out_dir)
+        if meta:
+            profile = meta.get("profile")
+        if not profile:
+            det_profile, _, _, _ = detect_from_fuzzer_stats(out_dir)
+            profile = det_profile
+    return profile or "fast"
+
+
+def parse_sanitizer_list(value: str) -> list[str]:
+    raw = value.strip()
+    if not raw:
+        die("--sanitizers cannot be empty")
+    if raw.lower() == "all":
+        items = [s for s in SANITIZERS if s != "none"]
+    else:
+        items = [s.strip() for s in raw.split(",") if s.strip()]
+    seen = set()
+    result = []
+    for item in items:
+        if item not in SANITIZERS or item == "none":
+            die(f"Unknown sanitizer in --sanitizers: {item}")
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    if not result:
+        die("--sanitizers must include at least one sanitizer")
+    return result
+
+
+def save_meta(out_dir: Path, meta: dict, *, dry_run=False):
+    if dry_run:
+        return
+    (out_dir / "fuzzctl.meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+
+def parse_table_to_csv(table_text: str) -> list[list[str]]:
+    lines = [l for l in table_text.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return []
+    header = re.split(r"\s{2,}", lines[0].strip())
+    rows = [header]
+    for line in lines[2:]:
+        cols = re.split(r"\s{2,}", line.strip())
+        if cols:
+            rows.append(cols)
+    return rows
+
+
+def write_csv(rows: list[list[str]], path: Path):
+    if not rows:
+        return
+    lines = []
+    for row in rows:
+        escaped = []
+        for cell in row:
+            if "," in cell or "\"" in cell:
+                cell = "\"" + cell.replace("\"", "\"\"") + "\""
+            escaped.append(cell)
+        lines.append(",".join(escaped))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def cmd_seeds(args):
+    build_seeds(rebuild=args.rebuild, dry_run=args.dry_run, verbose=args.verbose)
+
+
+def cmd_calibrate(args):
+    profile, sanitizer = resolve_profile_sanitizer(args, OUT_ROOT / "fuzz")
+    preset = preset_for("clean", profile, sanitizer)
+
+    build_seeds(rebuild=args.rebuild, dry_run=args.dry_run, verbose=args.verbose)
+    prune_stale_seed_roms(dry_run=args.dry_run, verbose=args.verbose)
+
+    cmake_build(preset, "headless_afl_arm9_blob",
+                clean_build=args.clean_build,
+                dry_run=args.dry_run,
+                verbose=args.verbose)
+
+    harness = ROOT / "build" / preset / "headless_afl_arm9_blob"
+    if not harness.is_file():
+        die(f"Harness not found: {harness}")
+
+    out_dir = OUT_ROOT / "calibration"
+    ensure_dir(out_dir)
+
+    cmd = [
+        str(ROOT / "tools" / "aflplusplus" / "time_harnesses.py"),
+        "--arm9-harness",
+        str(harness),
+        "--runs",
+        str(args.runs),
+    ]
+    if args.time_limit_ms:
+        cmd += ["--time-limit-ms", str(args.time_limit_ms)]
+
+    env = os.environ.copy()
+    if sanitizer == "asan-ubsan":
+        env["ASAN_OPTIONS"] = "detect_leaks=0"
+    proc = run_cmd(cmd, capture=True, dry_run=args.dry_run, verbose=args.verbose, env=env)
+    if args.dry_run:
+        return
+    if proc.returncode != 0:
+        print(proc.stdout, end="")
+        print(proc.stderr, end="", file=sys.stderr)
+        die("Calibration failed.")
+
+    table_path = out_dir / "table.txt"
+    table_path.write_text(proc.stdout)
+    rows = parse_table_to_csv(proc.stdout)
+    csv_path = out_dir / "table.csv"
+    write_csv(rows, csv_path)
+
+    if args.report == "table":
+        print(proc.stdout, end="")
+    elif args.report == "csv":
+        print(csv_path.read_text(), end="")
+    else:
+        print(proc.stdout, end="")
+
+
+def cmd_fuzz(args):
+    if not AFL_DIR.is_dir():
+        die(f"AFL++ directory not found: {AFL_DIR}")
+    afl_fuzz = AFL_DIR / "afl-fuzz"
+    if not afl_fuzz.is_file():
+        die(f"AFL++ afl-fuzz not found: {afl_fuzz}")
+
+    out_dir = Path(args.out_dir)
+    seed_dir = Path(args.seed_dir)
+    ensure_dir(out_dir)
+    ensure_dir(out_dir / "logs")
+
+    sand_sanitizers = parse_sanitizer_list(args.sand) if args.sand else []
+    if sand_sanitizers:
+        profile = resolve_profile(args, out_dir)
+        sanitizer = "none"
+    else:
+        profile, sanitizer = resolve_profile_sanitizer(args, out_dir)
+    preset = preset_for("afl", profile, sanitizer)
+
+    cmake_build(preset, "headless_afl_arm9_blob",
+                clean_build=args.clean_build,
+                dry_run=args.dry_run,
+                verbose=args.verbose)
+
+    target = ROOT / "build" / preset / "headless_afl_arm9_blob"
+    if not args.dry_run and not target.is_file():
+        die(f"Fuzz target not found: {target}")
+
+    sand_targets = []
+    if sand_sanitizers:
+        san_env = os.environ.copy()
+        san_env["AFL_SAN_NO_INST"] = "1"
+        for sand_sanitizer in sand_sanitizers:
+            sand_preset = preset_for("afl", profile, sand_sanitizer)
+            cmake_build(sand_preset, "headless_afl_arm9_blob",
+                        clean_build=args.clean_build,
+                        dry_run=args.dry_run,
+                        verbose=args.verbose,
+                        env=san_env)
+            sand_target = ROOT / "build" / sand_preset / "headless_afl_arm9_blob"
+            if not args.dry_run and not sand_target.is_file():
+                die(f"SAND sanitizer target not found: {sand_target}")
+            sand_targets.append(sand_target)
+
+    base_rom = Path(args.base_rom)
+    if not base_rom.is_file():
+        build_seeds(rebuild=False, dry_run=args.dry_run, verbose=args.verbose)
+    if not base_rom.is_file():
+        die(f"Base ROM not found: {base_rom}")
+
+    if not any(seed_dir.glob("*")):
+        build_seeds(rebuild=False, dry_run=args.dry_run, verbose=args.verbose)
+    if not any(seed_dir.glob("*")):
+        die(f"Seed directory is empty: {seed_dir}")
+
+    instances = args.instances
+    if instances < 1:
+        die("--instances must be >= 1")
+    if args.cycle_limit is not None and args.cycle_limit < 1:
+        die("--cycle-limit must be >= 1")
+    if args.afl_timeout_ms is not None and args.afl_timeout_ms < 1:
+        die("--afl-timeout-ms must be >= 1")
+
+    env = os.environ.copy()
+    env["AFL_SKIP_CPUFREQ"] = "1"
+    env["AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES"] = "1"
+    if "asan-ubsan" in sand_sanitizers:
+        asan_opts = env.get("ASAN_OPTIONS", "")
+        opts = [o for o in asan_opts.split(":") if o]
+        def ensure_opt(opt: str):
+            key = opt.split("=", 1)[0]
+            for i, existing in enumerate(opts):
+                if existing.split("=", 1)[0] == key:
+                    opts[i] = opt
+                    return
+            opts.append(opt)
+        ensure_opt("abort_on_error=1")
+        ensure_opt("detect_leaks=0")
+        ensure_opt("symbolize=0")
+        env["ASAN_OPTIONS"] = ":".join(opts)
+
+    meta = {
+        "profile": profile,
+        "sanitizer": sanitizer,
+        "preset": preset,
+        "base_rom": str(base_rom),
+        "seed_dir": str(seed_dir),
+        "out_dir": str(out_dir),
+    }
+    if sand_sanitizers:
+        meta["sand_sanitizers"] = sand_sanitizers
+    save_meta(out_dir, meta, dry_run=args.dry_run)
+
+    procs = []
+    try:
+        for i in range(1, instances + 1):
+            role = ["-M", "master"] if i == 1 else ["-S", f"slave{i}"]
+            cmd = [
+                str(afl_fuzz),
+                "-i",
+                str(seed_dir),
+                "-o",
+                str(out_dir),
+                *role,
+                "-t",
+                str(args.afl_timeout_ms),
+                "--",
+                str(target),
+                str(base_rom),
+            ]
+            for sand_target in sand_targets:
+                cmd.insert(cmd.index("--"), "-w")
+                cmd.insert(cmd.index("--"), str(sand_target))
+            if args.cycle_limit:
+                cmd += ["--cycle-limit", str(args.cycle_limit)]
+            if args.verbose or args.dry_run:
+                print("+ " + " ".join(shlex.quote(str(c)) for c in cmd))
+            if args.dry_run:
+                continue
+            if i == 1:
+                proc = subprocess.Popen(cmd, env=env)
+            else:
+                log_path = out_dir / "logs" / f"afl_slave{i}.log"
+                with open(log_path, "w") as log:
+                    proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=log)
+            procs.append(proc)
+        if args.dry_run:
+            return
+        for proc in procs:
+            proc.wait()
+    except KeyboardInterrupt:
+        for proc in procs:
+            proc.terminate()
+        raise
+
+
+def find_base_rom_for_repro(input_path: Path, fallback_out_dir: Path | None) -> str | None:
+    out_dir = fallback_out_dir
+    for parent in input_path.parents:
+        stats = parent / "fuzzer_stats"
+        if stats.is_file():
+            out_dir = parent
+            break
+    if out_dir:
+        _, _, _, base_rom = detect_from_fuzzer_stats(out_dir)
+        if base_rom:
+            return base_rom
+        meta = read_meta(out_dir)
+        if meta and "base_rom" in meta:
+            return meta["base_rom"]
+    return None
+
+
+def cmd_repro(args):
+    input_path = Path(args.input)
+    if not input_path.is_file():
+        die(f"Input not found: {input_path}")
+
+    out_dir_hint = input_path.parent.parent if input_path.parent.name in ("crashes", "queue") else OUT_ROOT / "fuzz"
+    profile, sanitizer = resolve_profile_sanitizer(args, out_dir_hint)
+    preset = preset_for("clean", profile, sanitizer)
+
+    cmake_build(preset, "headless_afl_arm9_blob",
+                clean_build=args.clean_build,
+                dry_run=args.dry_run,
+                verbose=args.verbose)
+
+    target = ROOT / "build" / preset / "headless_afl_arm9_blob"
+    if not target.is_file():
+        die(f"Repro target not found: {target}")
+
+    base_rom = args.base_rom or find_base_rom_for_repro(input_path, out_dir_hint)
+    if not base_rom:
+        die("Base ROM not found; pass --base-rom explicitly.")
+
+    cmd = [str(target), str(base_rom)]
+    if args.time_limit_ms:
+        cmd += ["--time-limit-ms", str(args.time_limit_ms)]
+    cmd += ["--timing", str(input_path)]
+    env = os.environ.copy()
+    if sanitizer == "asan-ubsan":
+        env["ASAN_OPTIONS"] = "detect_leaks=0"
+    run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose, env=env)
+
+
+def cmd_qt(args):
+    profile, sanitizer = resolve_profile_sanitizer(args, OUT_ROOT / "fuzz")
+    preset = preset_for("qt", profile, sanitizer)
+    cmake_build(preset, "melonDS",
+                clean_build=args.clean_build,
+                dry_run=args.dry_run,
+                verbose=args.verbose)
+
+
+def cmd_pack(args):
+    inp = Path(args.input)
+    out_rom = Path(args.rom_out)
+    if not inp.is_file():
+        die(f"Input not found: {inp}")
+    if not NDSTOOL.is_file():
+        die(f"ndstool not found: {NDSTOOL}")
+    if not BLOCKSDS_ARM7.is_file():
+        die(f"BlocksDS ARM7 ELF not found: {BLOCKSDS_ARM7}")
+    if not BLOCKSDS_ICON.is_file():
+        die(f"BlocksDS icon not found: {BLOCKSDS_ICON}")
+    ensure_dir(out_rom.parent)
+    cmd = [
+        str(NDSTOOL),
+        "-c",
+        str(out_rom),
+        "-7",
+        str(BLOCKSDS_ARM7),
+        "-9",
+        str(inp),
+        "-b",
+        str(BLOCKSDS_ICON),
+        "Fuzzcase;melonDS fuzz",
+    ]
+    run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose)
+
+
+def prune_stale_seed_roms(*, dry_run=False, verbose=False):
+    if not SEED_ROM_DIR.is_dir() or not SEED_BLOB_DIR.is_dir():
+        return
+    blobs = {p.stem[len("arm9_"):]: p for p in SEED_BLOB_DIR.glob("arm9_*.bin")}
+    removed = []
+    for rom in SEED_ROM_DIR.glob("seed_*.nds"):
+        name = rom.stem[len("seed_"):]
+        if name not in blobs:
+            removed.append(rom)
+            if verbose or dry_run:
+                print(f"+ rm {rom}")
+            if not dry_run:
+                rom.unlink(missing_ok=True)
+    if removed and verbose:
+        print(f"Pruned {len(removed)} stale seed ROM(s).")
+
+
+def add_common(parser, *, include_sanitizer=True):
+    parser.add_argument("--profile", choices=[*PROFILES, AUTO], default=AUTO,
+                        help="Build profile (fast/lto/auto). auto = detect from out dir; fallback fast")
+    if include_sanitizer:
+        parser.add_argument("--sanitizer", choices=[*SANITIZERS, AUTO], default=AUTO,
+                            help="Sanitizer mode (none/asan-ubsan/msan/cfi/auto). auto = detect from out dir; fallback none")
+    parser.add_argument("--dry-run", action="store_true", help="Print commands without running")
+    parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    parser.add_argument("--clean-build", action="store_true", help="Remove build dir before building")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="fuzzctl",
+        description="ARM9 JIT fuzzing helper",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    seeds = sub.add_parser(
+        "seeds",
+        help="Build BlocksDS seeds",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(seeds)
+    seeds.add_argument("--rebuild", action="store_true", help="Clean and rebuild seeds")
+    seeds.set_defaults(func=cmd_seeds)
+
+    calibrate = sub.add_parser(
+        "calibrate",
+        help="Calibrate seed timings",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(calibrate)
+    calibrate.add_argument("--runs", type=int, default=3, help="Runs per seed")
+    calibrate.add_argument("--time-limit-ms", type=int, default=500, help="Time limit for timing runs")
+    calibrate.add_argument("--report", choices=["table", "csv"], default="table", help="Print report format")
+    calibrate.add_argument("--rebuild", action="store_true", help="Clean and rebuild seeds")
+    calibrate.set_defaults(func=cmd_calibrate)
+
+    fuzz = sub.add_parser(
+        "fuzz",
+        help="Run AFL++ master + slaves",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(fuzz)
+    fuzz.add_argument("--instances", type=int, default=(os.cpu_count() or 4),
+                      help="Number of AFL++ instances")
+    fuzz.add_argument("--out-dir", default=str(OUT_ROOT / "fuzz"),
+                      help="Output directory")
+    fuzz.add_argument("--seed-dir", default=str(SEED_BLOB_DIR),
+                      help="Seed directory")
+    fuzz.add_argument("--base-rom", default=str(DEFAULT_BASE_ROM),
+                      help="Base ROM path")
+    fuzz.add_argument("--cycle-limit", type=int, default=DEFAULT_FUZZ_CYCLE_LIMIT,
+                      help="ARM9 cycle budget per input")
+    fuzz.add_argument("--afl-timeout-ms", type=int, default=2000,
+                      help="AFL++ per-input timeout (ms)")
+    fuzz.add_argument("--sand",
+                      help="Enable SAND side-checks; comma list or 'all' (adds -w sanitizer binaries)")
+    fuzz.set_defaults(func=cmd_fuzz)
+
+    repro = sub.add_parser(
+        "repro",
+        help="Reproduce AFL++ input in clean build",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(repro)
+    repro.add_argument("--input", required=True, help="Input to reproduce")
+    repro.add_argument("--base-rom", help="Base ROM path")
+    repro.add_argument("--time-limit-ms", type=int, default=500, help="Override harness time limit")
+    repro.set_defaults(func=cmd_repro)
+
+    qt = sub.add_parser(
+        "qt",
+        help="Build Qt/SDL frontend",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(qt)
+    qt.set_defaults(func=cmd_qt)
+
+    pack = sub.add_parser(
+        "pack",
+        help="Package ARM9 blob into ROM",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(pack)
+    pack.add_argument("--input", required=True, help="ARM9 .bin input")
+    pack.add_argument("--rom-out", required=True, help="Output .nds path")
+    pack.set_defaults(func=cmd_pack)
+
+    args = parser.parse_args()
+    args.func(args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

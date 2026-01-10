@@ -16,6 +16,8 @@ void Headless_SetFirmwarePath(const std::string& path);
 
 bool Headless_StopRequested();
 StopReason Headless_StopReason();
+void Headless_ResetStop();
+void Headless_SuppressWarnOnce(bool suppress);
 
 void Headless_SetAddonKeyDown(KeyType type, bool down);
 void Headless_SetMotionValue(MotionQueryType type, float value);

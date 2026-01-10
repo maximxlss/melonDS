@@ -558,9 +558,13 @@ void SPIHost::WriteData(u8 val)
         Log(LogLevel::Warn, "SPI to unknown device %04X %02X\n", Cnt, val);
     }
 
+#ifdef MELON_FUZZ_FAST
+    TransferDone(0);
+#else
     // SPI transfers one bit per cycle -> 8 cycles per byte
     u32 delay = 8 * (8 << (Cnt & 0x3));
     NDS.ScheduleEvent(Event_SPITransfer, false, delay, 0, 0);
+#endif
 }
 
 }

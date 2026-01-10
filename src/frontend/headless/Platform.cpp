@@ -52,6 +52,11 @@ std::string g_ndsSavePath;
 std::string g_gbaSavePath;
 std::string g_firmwarePath;
 
+std::atomic<bool> g_warnedMp{false};
+std::atomic<bool> g_warnedNetSend{false};
+std::atomic<bool> g_warnedNetRecv{false};
+std::atomic<bool> g_warnedMic{false};
+
 std::atomic<bool> g_stopRequested{false};
 std::atomic<StopReason> g_stopReason{StopReason::Unknown};
 
@@ -148,6 +153,20 @@ StopReason Headless_StopReason()
     return g_stopReason.load(std::memory_order_relaxed);
 }
 
+void Headless_ResetStop()
+{
+    g_stopRequested.store(false, std::memory_order_relaxed);
+    g_stopReason.store(StopReason::Unknown, std::memory_order_relaxed);
+}
+
+void Headless_SuppressWarnOnce(bool suppress)
+{
+    g_warnedMp.store(suppress, std::memory_order_relaxed);
+    g_warnedNetSend.store(suppress, std::memory_order_relaxed);
+    g_warnedNetRecv.store(suppress, std::memory_order_relaxed);
+    g_warnedMic.store(suppress, std::memory_order_relaxed);
+}
+
 void Headless_SetAddonKeyDown(KeyType type, bool down)
 {
     u32 mask = 1u << static_cast<u32>(type);
@@ -168,6 +187,7 @@ void SignalStop(StopReason reason, void* userdata)
     g_stopRequested.store(true, std::memory_order_relaxed);
     g_stopReason.store(reason, std::memory_order_relaxed);
 }
+
 
 std::string GetLocalFilePath(const std::string& filename)
 {
@@ -561,8 +581,7 @@ void WriteDateTime(int year, int month, int day, int hour, int minute, int secon
 void MP_Begin(void* userdata)
 {
     (void)userdata;
-    static std::atomic<bool> warned{false};
-    if (!warned.exchange(true))
+    if (!g_warnedMp.exchange(true))
         Log(LogLevel::Error, "Headless: local multiplayer is disabled\n");
 }
 
@@ -638,8 +657,7 @@ int Net_SendPacket(u8* data, int len, void* userdata)
     (void)data;
     (void)len;
     (void)userdata;
-    static std::atomic<bool> warned{false};
-    if (!warned.exchange(true))
+    if (!g_warnedNetSend.exchange(true))
         Log(LogLevel::Error, "Headless: Wi-Fi/network is disabled; dropping packets\n");
     return 0;
 }
@@ -648,8 +666,7 @@ int Net_RecvPacket(u8* data, void* userdata)
 {
     (void)data;
     (void)userdata;
-    static std::atomic<bool> warned{false};
-    if (!warned.exchange(true))
+    if (!g_warnedNetRecv.exchange(true))
         Log(LogLevel::Error, "Headless: Wi-Fi/network is disabled; no packets available\n");
     return 0;
 }
@@ -682,8 +699,7 @@ void Camera_CaptureFrame(int num, u32* frame, int width, int height, bool yuv, v
 void Mic_Start(void* userdata)
 {
     (void)userdata;
-    static std::atomic<bool> warned{false};
-    if (!warned.exchange(true))
+    if (!g_warnedMic.exchange(true))
         Log(LogLevel::Error, "Headless: microphone is disabled; returning silence\n");
 }
 

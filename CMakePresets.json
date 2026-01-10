@@ -38,6 +38,80 @@
       }
     },
     {
+      "name": "headless-harness",
+      "inherits": "headless",
+      "description": "Headless harness (no AFL compiler)",
+      "cacheVariables": {
+        "BUILD_HEADLESS_AFL": "ON",
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fno-omit-frame-pointer -fno-sanitize=leak",
+        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -fno-sanitize=leak"
+      }
+    },
+    {
+      "name": "headless-harness-lto",
+      "inherits": "headless-harness",
+      "description": "Headless harness (no AFL compiler, LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "headless-harness-asan-ubsan",
+      "inherits": "headless-harness",
+      "description": "Headless harness with ASan+UBSan (no AFL compiler)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "headless-harness-lto-asan-ubsan",
+      "inherits": "headless-harness-asan-ubsan",
+      "description": "Headless harness with ASan+UBSan (no AFL compiler, LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "headless-harness-msan",
+      "inherits": "headless-harness",
+      "description": "Headless harness with MSan (no AFL compiler)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=memory -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=memory -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "headless-harness-lto-msan",
+      "inherits": "headless-harness-msan",
+      "description": "Headless harness with MSan (no AFL compiler, LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "headless-harness-cfi",
+      "inherits": "headless-harness",
+      "description": "Headless harness with CFI (no AFL compiler)",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "CMAKE_C_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "headless-harness-lto-cfi",
+      "inherits": "headless-harness-cfi",
+      "description": "Headless harness with CFI (no AFL compiler, LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
       "name": "headless-fuzz",
       "inherits": "headless",
       "description": "Headless fuzzing build with sanitizers",
@@ -58,15 +132,75 @@
       }
     },
     {
-      "name": "qt-asan-ubsan",
+      "name": "qt",
       "inherits": "base",
+      "description": "Qt/SDL build",
+      "cacheVariables": {
+        "BUILD_QT_SDL": "ON",
+        "BUILD_HEADLESS": "OFF"
+      }
+    },
+    {
+      "name": "qt-lto",
+      "inherits": "qt",
+      "description": "Qt/SDL build (LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "qt-asan-ubsan",
+      "inherits": "qt",
       "description": "Qt/SDL build with ASan+UBSan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "BUILD_QT_SDL": "ON",
-        "BUILD_HEADLESS": "OFF",
         "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "qt-lto-asan-ubsan",
+      "inherits": "qt-asan-ubsan",
+      "description": "Qt/SDL build with ASan+UBSan (LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "qt-msan",
+      "inherits": "qt",
+      "description": "Qt/SDL build with MSan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS": "-fsanitize=memory -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=memory -fno-omit-frame-pointer -fno-sanitize-recover=all -fno-sanitize=leak -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "qt-lto-msan",
+      "inherits": "qt-msan",
+      "description": "Qt/SDL build with MSan (LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      }
+    },
+    {
+      "name": "qt-cfi",
+      "inherits": "qt",
+      "description": "Qt/SDL build with CFI",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
+        "CMAKE_C_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+      }
+    },
+    {
+      "name": "qt-lto-cfi",
+      "inherits": "qt-cfi",
+      "description": "Qt/SDL build with CFI (LTO)",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
       }
     },
     {
@@ -132,17 +266,25 @@
       }
     },
     {
-      "name": "headless-afl-tsan",
-      "inherits": "headless-afl",
-      "description": "Headless AFL++ harness with TSan",
+      "name": "headless-afl-lto-msan",
+      "inherits": "headless-afl-lto",
+      "description": "Headless AFL++ harness with MSan (LTO)",
       "environment": {
-        "AFL_USE_TSAN": "1"
+        "AFL_USE_MSAN": "1"
       }
     },
     {
       "name": "headless-afl-cfi",
       "inherits": "headless-afl",
       "description": "Headless AFL++ harness with CFI",
+      "environment": {
+        "AFL_USE_CFISAN": "1"
+      }
+    },
+    {
+      "name": "headless-afl-lto-cfi",
+      "inherits": "headless-afl-lto",
+      "description": "Headless AFL++ harness with CFI (LTO)",
       "environment": {
         "AFL_USE_CFISAN": "1"
       }
@@ -184,7 +326,9 @@
       },
       "vendor": {
         "microsoft.com/VisualStudioSettings/CMake/1.0": {
-          "hostOS": [ "Windows" ]
+          "hostOS": [
+            "Windows"
+          ]
         }
       }
     },
@@ -266,9 +410,84 @@
       "displayName": "Headless ASan+UBSan"
     },
     {
+      "name": "headless-harness",
+      "configurePreset": "headless-harness",
+      "displayName": "Headless Harness (no AFL compiler)"
+    },
+    {
+      "name": "headless-harness-lto",
+      "configurePreset": "headless-harness-lto",
+      "displayName": "Headless Harness (no AFL compiler, LTO)"
+    },
+    {
+      "name": "headless-harness-asan-ubsan",
+      "configurePreset": "headless-harness-asan-ubsan",
+      "displayName": "Headless Harness ASan+UBSan (no AFL compiler)"
+    },
+    {
+      "name": "headless-harness-lto-asan-ubsan",
+      "configurePreset": "headless-harness-lto-asan-ubsan",
+      "displayName": "Headless Harness ASan+UBSan (no AFL compiler, LTO)"
+    },
+    {
+      "name": "headless-harness-msan",
+      "configurePreset": "headless-harness-msan",
+      "displayName": "Headless Harness MSan (no AFL compiler)"
+    },
+    {
+      "name": "headless-harness-lto-msan",
+      "configurePreset": "headless-harness-lto-msan",
+      "displayName": "Headless Harness MSan (no AFL compiler, LTO)"
+    },
+    {
+      "name": "headless-harness-cfi",
+      "configurePreset": "headless-harness-cfi",
+      "displayName": "Headless Harness CFI (no AFL compiler)"
+    },
+    {
+      "name": "headless-harness-lto-cfi",
+      "configurePreset": "headless-harness-lto-cfi",
+      "displayName": "Headless Harness CFI (no AFL compiler, LTO)"
+    },
+    {
       "name": "qt-asan-ubsan",
       "configurePreset": "qt-asan-ubsan",
       "displayName": "Qt/SDL ASan+UBSan"
+    },
+    {
+      "name": "qt",
+      "configurePreset": "qt",
+      "displayName": "Qt/SDL"
+    },
+    {
+      "name": "qt-lto",
+      "configurePreset": "qt-lto",
+      "displayName": "Qt/SDL (LTO)"
+    },
+    {
+      "name": "qt-lto-asan-ubsan",
+      "configurePreset": "qt-lto-asan-ubsan",
+      "displayName": "Qt/SDL ASan+UBSan (LTO)"
+    },
+    {
+      "name": "qt-msan",
+      "configurePreset": "qt-msan",
+      "displayName": "Qt/SDL MSan"
+    },
+    {
+      "name": "qt-lto-msan",
+      "configurePreset": "qt-lto-msan",
+      "displayName": "Qt/SDL MSan (LTO)"
+    },
+    {
+      "name": "qt-cfi",
+      "configurePreset": "qt-cfi",
+      "displayName": "Qt/SDL CFI"
+    },
+    {
+      "name": "qt-lto-cfi",
+      "configurePreset": "qt-lto-cfi",
+      "displayName": "Qt/SDL CFI (LTO)"
     },
     {
       "name": "headless-afl",
@@ -301,14 +520,19 @@
       "displayName": "Headless AFL++ MSan"
     },
     {
-      "name": "headless-afl-tsan",
-      "configurePreset": "headless-afl-tsan",
-      "displayName": "Headless AFL++ TSan"
+      "name": "headless-afl-lto-msan",
+      "configurePreset": "headless-afl-lto-msan",
+      "displayName": "Headless AFL++ MSan (LTO)"
     },
     {
       "name": "headless-afl-cfi",
       "configurePreset": "headless-afl-cfi",
       "displayName": "Headless AFL++ CFI"
+    },
+    {
+      "name": "headless-afl-lto-cfi",
+      "configurePreset": "headless-afl-lto-cfi",
+      "displayName": "Headless AFL++ CFI (LTO)"
     },
     {
       "name": "release",

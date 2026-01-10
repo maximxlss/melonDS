@@ -10,9 +10,10 @@ from pathlib import Path
 from statistics import mean
 
 TIMING_RE = re.compile(r"timing:.*cpu_ms=([0-9.]+)")
+CYCLES_RE = re.compile(r"cycles=([0-9]+)")
 
 
-def run_once(cmd: list[str]) -> float:
+def run_once(cmd: list[str]) -> tuple[float, int | None]:
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         msg = ["Command failed:", "  " + " ".join(cmd)]
@@ -31,10 +32,18 @@ def run_once(cmd: list[str]) -> float:
             msg.append("stderr:\n" + proc.stderr)
         raise RuntimeError("\n".join(msg))
 
-    return float(m.group(1))
+    cpu_ms = float(m.group(1))
+    cycles = None
+    m_cycles = CYCLES_RE.search(proc.stdout)
+    if m_cycles:
+        try:
+            cycles = int(m_cycles.group(1))
+        except ValueError:
+            cycles = None
+    return cpu_ms, cycles
 
 
-def run_n(cmd: list[str], runs: int) -> list[float]:
+def run_n(cmd: list[str], runs: int) -> list[tuple[float, int | None]]:
     return [run_once(cmd) for _ in range(runs)]
 
 
@@ -154,6 +163,8 @@ def main() -> int:
         "Seed",
         "Runs",
         "Avg ms",
+        "Avg cycles",
+        "Avg cyc/ms",
         "Min ms",
         "Max ms",
         "Max dev ms",
@@ -180,16 +191,26 @@ def main() -> int:
             str(args.time_limit_ms),
         ]
         timings = run_n(cmd, args.runs)
-        avg = mean(timings)
-        min_t = min(timings)
-        max_t = max(timings)
-        max_dev = max(abs(t - avg) for t in timings)
+        ms_vals = [t[0] for t in timings]
+        avg = mean(ms_vals)
+        min_t = min(ms_vals)
+        max_t = max(ms_vals)
+        max_dev = max(abs(t - avg) for t in ms_vals)
         max_dev_pct = (max_dev / avg * 100.0) if avg > 0 else 0.0
+        cycles_vals = [t[1] for t in timings if t[1] is not None]
+        avg_cycles = mean(cycles_vals) if cycles_vals else None
+        cyc_per_ms_vals = []
+        for ms, cycles in timings:
+            if cycles is not None and ms > 0:
+                cyc_per_ms_vals.append(cycles / ms)
+        avg_cyc_per_ms = mean(cyc_per_ms_vals) if cyc_per_ms_vals else None
 
         rows.append([
             seed,
             str(args.runs),
             f"{avg:.3f}",
+            f"{avg_cycles:.0f}" if avg_cycles is not None else "-",
+            f"{avg_cyc_per_ms:.1f}" if avg_cyc_per_ms is not None else "-",
             f"{min_t:.3f}",
             f"{max_t:.3f}",
             f"{max_dev:.3f}",

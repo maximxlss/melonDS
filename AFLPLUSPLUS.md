@@ -1,33 +1,26 @@
 # AFL++ (Headless Harness)
 
-This repo includes headless AFL++ harness targets:
-- **ROM input**: `headless_afl` (fuzzes whole `.nds` files)
-  - Source: `src/frontend/headless/afl_harness_rom.cpp`
+This repo includes a headless AFL++ harness target:
 - **ARM9 blob input**: `headless_afl_arm9_blob` (fuzzes ARM9 code with a fixed base ROM)
   - Source: `src/frontend/headless/afl_harness_arm9_blob.cpp`
 
-Both harnesses use AFL++ persistent mode (`__AFL_LOOP`) and shared-memory test
-cases (`__AFL_FUZZ_INIT`) to minimize process startup overhead.
+The harness uses AFL++ persistent mode (`__AFL_LOOP`) and shared-memory test cases
+(`__AFL_FUZZ_INIT`) to minimize process startup overhead.
 
-## Quick start (ROM fuzzing)
+## Quick start (ARM9 blob fuzzing)
 
 1) Build AFL++ in `third_party/aflplusplus`:
 ```
 tools/aflplusplus/build_aflplusplus.sh
 ```
 
-2) Configure/build the ROM harness:
+2) Configure/build the ARM9 blob harness:
 ```
 cmake --preset headless-afl-asan-ubsan
-cmake --build --preset headless-afl-asan-ubsan --target headless_afl
+cmake --build --preset headless-afl-asan-ubsan --target headless_afl_arm9_blob
 ```
 
-3) Run AFL++ (ROM input):
-```
-tools/aflplusplus/run_fuzz.sh headless-afl-asan-ubsan ./seeds ./out
-```
-
-Run multiple coordinated AFL++ instances (master + slaves) in one line (ARM9 blob harness by default):
+3) Run multiple coordinated AFL++ instances (master + slaves) in one line:
 ```
 tools/aflplusplus/run_fuzz_multi.sh --instances 8
 ```
@@ -73,12 +66,17 @@ cmake --build --preset headless-afl-asan-ubsan --target time_harnesses
 
 Manual timing runs:
 ```
-./build/headless-afl-asan-ubsan/headless_afl --timing tools/blocksds/jit_seeds/build/seed_arith.nds
 ./build/headless-afl-asan-ubsan/headless_afl_arm9_blob \
   tools/blocksds/jit_seeds/build/seed_arith.nds \
   --timing seeds/arm9_arith.bin \
   --time-limit-ms 5
 ```
+
+Notes:
+- The ARM9 harness now uses a cycle budget (not an async timer). `--time-limit-ms`
+  is converted to a cycle limit using a default cycles-per-ms value; you can override
+  with `--cycles-per-ms` or pass `--cycle-limit` directly.
+- Timing output includes `cycles` and `cycle_limit` for calibration.
 
 ## Presets
 
@@ -86,7 +84,6 @@ The CMake presets configured for AFL++ are:
 - `headless-afl`: instrumentation only
 - `headless-afl-asan-ubsan`: ASan + UBSan
 - `headless-afl-msan`: MSan (separate build)
-- `headless-afl-tsan`: TSan (separate build)
 - `headless-afl-cfi`: CFI (separate build)
 
 These sanitizer builds are separate because the sanitizers are not generally
@@ -98,7 +95,7 @@ The harness uses `NDSArgs` defaults, which include JIT when the build supports i
 To force JIT on/off in the build, set:
 ```
 cmake --preset headless-afl-asan-ubsan -DENABLE_JIT=ON
-cmake --build --preset headless-afl-asan-ubsan --target headless_afl
+cmake --build --preset headless-afl-asan-ubsan --target headless_afl_arm9_blob
 ```
 
 Notes:
@@ -113,36 +110,36 @@ If you’re specifically hunting for high‑impact bugs, run these in order:
 1) **AFL++ ASan+UBSan, JIT on**
 ```
 cmake --preset headless-afl-asan-ubsan -DENABLE_JIT=ON
-cmake --build --preset headless-afl-asan-ubsan --target headless_afl
-tools/aflplusplus/run_fuzz.sh headless-afl-asan-ubsan ./seeds ./out-asan-ubsan
+cmake --build --preset headless-afl-asan-ubsan --target headless_afl_arm9_blob
+tools/aflplusplus/run_fuzz_multi.sh --instances 8 --out-dir ./out-asan-ubsan
 ```
 
 2) **AFL++ (no sanitizers), JIT on**
 ```
 cmake --preset headless-afl -DENABLE_JIT=ON
-cmake --build --preset headless-afl --target headless_afl
-tools/aflplusplus/run_fuzz.sh headless-afl ./seeds ./out-fast
+cmake --build --preset headless-afl --target headless_afl_arm9_blob
+tools/aflplusplus/run_fuzz_multi.sh --instances 8 --out-dir ./out-fast --preset headless-afl
 ```
 
 3) **AFL++ ASan+UBSan, JIT off**
 ```
 cmake --preset headless-afl-asan-ubsan -DENABLE_JIT=OFF
-cmake --build --preset headless-afl-asan-ubsan --target headless_afl
-tools/aflplusplus/run_fuzz.sh headless-afl-asan-ubsan ./seeds ./out-asan-ubsan-nojit
+cmake --build --preset headless-afl-asan-ubsan --target headless_afl_arm9_blob
+tools/aflplusplus/run_fuzz_multi.sh --instances 8 --out-dir ./out-asan-ubsan-nojit
 ```
 
 4) **AFL++ MSan (JIT off)**
 ```
 cmake --preset headless-afl-msan -DENABLE_JIT=OFF
-cmake --build --preset headless-afl-msan --target headless_afl
-tools/aflplusplus/run_fuzz.sh headless-afl-msan ./seeds ./out-msan
+cmake --build --preset headless-afl-msan --target headless_afl_arm9_blob
+tools/aflplusplus/run_fuzz_multi.sh --instances 8 --out-dir ./out-msan --preset headless-afl-msan
 ```
 
 5) **AFL++ CFI (JIT off)**
 ```
 cmake --preset headless-afl-cfi -DENABLE_JIT=OFF
-cmake --build --preset headless-afl-cfi --target headless_afl
-tools/aflplusplus/run_fuzz.sh headless-afl-cfi ./seeds ./out-cfi
+cmake --build --preset headless-afl-cfi --target headless_afl_arm9_blob
+tools/aflplusplus/run_fuzz_multi.sh --instances 8 --out-dir ./out-cfi --preset headless-afl-cfi
 ```
 
 ## Further improvements (targeted fuzzing)
