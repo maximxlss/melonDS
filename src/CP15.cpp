@@ -795,7 +795,10 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
     if (addr < ITCMSize)
     {
         CodeCycles = 1;
-        return *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)];
+        u32 value = 0;
+        const u8* src = &ITCM[addr & (ITCMPhysicalSize - 1)];
+        ::memcpy(&value, src, sizeof(value));
+        return value;
     }
 
     CodeCycles = RegionCodeCycles;
@@ -809,7 +812,13 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
         //return *(u32*)&CurICacheLine[addr & 0x1C];
     }
 
-    if (CodeMem.Mem) return *(u32*)&CodeMem.Mem[addr & CodeMem.Mask];
+    if (CodeMem.Mem)
+    {
+        u32 value = 0;
+        const u8* src = &CodeMem.Mem[addr & CodeMem.Mask];
+        ::memcpy(&value, src, sizeof(value));
+        return value;
+    }
 
     return BusRead32(addr);
 }
