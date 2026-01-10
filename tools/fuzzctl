@@ -633,12 +633,28 @@ def iter_crash_inputs(out_dir: Path) -> list[Path]:
     return sorted(crash_inputs)
 
 
+def dedupe_inputs(paths: list[Path]) -> list[Path]:
+    seen = set()
+    unique = []
+    for path in paths:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        digest = (len(data), hash(data))
+        if digest in seen:
+            continue
+        seen.add(digest)
+        unique.append(path)
+    return unique
+
+
 def cmd_repro_all(args):
     out_dir = Path(args.out_dir)
     if not out_dir.is_dir():
         die(f"Output dir not found: {out_dir}")
 
-    crash_inputs = iter_crash_inputs(out_dir)
+    crash_inputs = dedupe_inputs(iter_crash_inputs(out_dir))
     if not crash_inputs:
         die(f"No crash inputs found under: {out_dir}")
 
@@ -682,7 +698,8 @@ def cmd_repro_all(args):
         return any(marker in combined for marker in crash_markers)
 
     toolchains = ["clean", "afl"]
-    sanitizer_order = ["none"] + sanitizers
+    sanitizer_order = [s for s in sanitizers if s != "none"]
+    sanitizer_order.append("none")
 
     total = len(crash_inputs)
     def render_progress(done: int, label: str) -> None:
