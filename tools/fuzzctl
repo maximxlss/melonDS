@@ -684,7 +684,22 @@ def cmd_repro_all(args):
     toolchains = ["clean", "afl"]
     sanitizer_order = ["none"] + sanitizers
 
-    for input_path in crash_inputs:
+    total = len(crash_inputs)
+    def render_progress(done: int, label: str) -> None:
+        try:
+            width = shutil.get_terminal_size((80, 20)).columns
+        except Exception:
+            width = 80
+        bar_width = max(10, min(40, width - 30))
+        filled = int(bar_width * done / max(1, total))
+        bar = "#" * filled + "-" * (bar_width - filled)
+        msg = f"[{done}/{total}] {bar} {label}"
+        if len(msg) > width - 1:
+            msg = msg[:width - 1]
+        print("\r" + msg, end="", file=sys.stderr, flush=True)
+
+    for idx, input_path in enumerate(crash_inputs, start=1):
+        render_progress(idx - 1, input_path.name)
         base_rom = args.base_rom or find_base_rom_for_repro(input_path, out_dir)
         if not base_rom:
             die(f"Base ROM not found for input: {input_path}")
@@ -730,6 +745,8 @@ def cmd_repro_all(args):
                 f"attempts: {attempts}",
             ]
             report_path.write_text("\n".join(content) + "\n")
+        render_progress(idx, input_path.name)
+    print(file=sys.stderr)
 
 
 def cmd_qt(args):
