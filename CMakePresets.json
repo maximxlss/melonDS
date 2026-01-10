@@ -44,6 +44,10 @@
       "cacheVariables": {
         "BUILD_HEADLESS_AFL": "ON",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_AR": "ar",
+        "CMAKE_RANLIB": "ranlib",
         "CMAKE_C_FLAGS": "-fno-omit-frame-pointer -fno-sanitize=leak",
         "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer -fno-sanitize=leak"
       }
@@ -99,8 +103,12 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-        "CMAKE_C_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
-        "CMAKE_CXX_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_POSITION_INDEPENDENT_EXECUTABLE": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=cfi -flto -fvisibility=hidden -fno-PIE -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=cfi -flto -fvisibility=hidden -fvisibility-inlines-hidden -fno-PIE -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS",
+        "CMAKE_EXE_LINKER_FLAGS": "-no-pie"
       }
     },
     {
@@ -191,8 +199,10 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON",
-        "CMAKE_C_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
-        "CMAKE_CXX_FLAGS": "-fsanitize=cfi -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_FLAGS": "-fsanitize=cfi -flto -fvisibility=hidden -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2",
+        "CMAKE_CXX_FLAGS": "-fsanitize=cfi -flto -fvisibility=hidden -fvisibility-inlines-hidden -fno-omit-frame-pointer -fno-sanitize-recover=all -fstack-protector-strong -D_FORTIFY_SOURCE=2 -D_GLIBCXX_ASSERTIONS"
       }
     },
     {

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -32,21 +33,28 @@ def die(msg: str) -> None:
     raise SystemExit(1)
 
 
-def run_cmd(cmd, *, cwd=None, env=None, dry_run=False, verbose=False, capture=False):
+def run_cmd(cmd, *, cwd=None, env=None, dry_run=False, verbose=False, capture=False, check=True):
     if verbose or dry_run:
         print("+ " + " ".join(shlex.quote(str(c)) for c in cmd))
     if dry_run:
         return None
     if capture:
-        return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
-    return subprocess.run(cmd, cwd=cwd, env=env, check=True)
+        return subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            errors="replace",
+        )
+    return subprocess.run(cmd, cwd=cwd, env=env, check=check)
 
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def cmake_build(preset: str, target: str | None, *, clean_build=False, dry_run=False, verbose=False, env=None):
+def cmake_build(preset: str, target: str | None, *, clean_build=False, dry_run=False, verbose=False, env=None, cache_overrides: dict | None = None):
     if clean_build:
         build_dir = ROOT / "build" / preset
         if build_dir.exists():
@@ -59,7 +67,45 @@ def cmake_build(preset: str, target: str | None, *, clean_build=False, dry_run=F
                     for name in dirs:
                         Path(root, name).rmdir()
                 build_dir.rmdir()
-    run_cmd(["cmake", "--preset", preset], dry_run=dry_run, verbose=verbose, env=env)
+    overrides = dict(cache_overrides or {})
+    purge_cache = []
+    build_dir = ROOT / "build" / preset
+    cache_path = build_dir / "CMakeCache.txt"
+    cache_text = cache_path.read_text() if cache_path.is_file() else ""
+    if cache_text:
+        for key in ("CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"):
+            m = re.search(rf"^{key}:[^=]*=(.*)$", cache_text, re.MULTILINE)
+            if not m:
+                continue
+            value = m.group(1).strip()
+            if value and not Path(value).is_file():
+                purge_cache.append(key)
+        for key in ("CMAKE_AR", "CMAKE_RANLIB"):
+            m = re.search(rf"^{key}:[^=]*=(.*)$", cache_text, re.MULTILINE)
+            if not m:
+                continue
+            value = m.group(1).strip()
+            if value and ("/" in value) and not Path(value).is_file():
+                purge_cache.append(key)
+    if target == "headless_afl_arm9_blob":
+        overrides.setdefault("BUILD_HEADLESS_AFL", "ON")
+        overrides.setdefault("BUILD_HEADLESS", "ON")
+        if cache_text and ("BUILD_HEADLESS_AFL:BOOL=OFF" in cache_text or "BUILD_HEADLESS:BOOL=OFF" in cache_text):
+            purge_cache.extend(["BUILD_HEADLESS_AFL", "BUILD_HEADLESS"])
+        ar_path = shutil.which("ar")
+        ranlib_path = shutil.which("ranlib")
+        if ar_path:
+            overrides.setdefault("CMAKE_AR", ar_path)
+            purge_cache.append("CMAKE_AR")
+        if ranlib_path:
+            overrides.setdefault("CMAKE_RANLIB", ranlib_path)
+            purge_cache.append("CMAKE_RANLIB")
+    configure_cmd = ["cmake", "--preset", preset]
+    for key in purge_cache:
+        configure_cmd.extend(["-U", key])
+    for key, value in overrides.items():
+        configure_cmd.append(f"-D{key}={value}")
+    run_cmd(configure_cmd, dry_run=dry_run, verbose=verbose, env=env)
     build_cmd = ["cmake", "--build", "--preset", preset]
     if target:
         build_cmd += ["--target", target]
@@ -72,6 +118,18 @@ def build_seeds(*, rebuild=False, dry_run=False, verbose=False):
     if rebuild:
         run_cmd(["make", "clean"], cwd=SEED_TOOL_DIR, dry_run=dry_run, verbose=verbose)
     run_cmd(["make", "seeds"], cwd=SEED_TOOL_DIR, dry_run=dry_run, verbose=verbose)
+
+
+def ensure_afl_lto_tools() -> None:
+    afl_clang = AFL_DIR / "afl-clang-lto"
+    afl_clangxx = AFL_DIR / "afl-clang-lto++"
+    if not afl_clang.is_file() or not afl_clangxx.is_file():
+        die(
+            "AFL++ LTO compiler not found. Expected:\n"
+            f"  {afl_clang}\n"
+            f"  {afl_clangxx}\n"
+            "Build AFL++ (third_party/aflplusplus) or use --profile fast."
+        )
 
 
 def preset_for(toolchain: str, profile: str, sanitizer: str) -> str:
@@ -131,6 +189,22 @@ def parse_fuzzer_stats(path: Path) -> dict:
     return data
 
 
+ROM_EXTS = {".nds", ".srl"}
+
+
+def looks_like_base_rom(arg: str) -> bool:
+    if not arg or arg in ("@@", "--"):
+        return False
+    if arg.startswith("-"):
+        return False
+    return Path(arg).suffix.lower() in ROM_EXTS
+
+
+def is_harness_target(arg: str) -> bool:
+    name = Path(arg).name
+    return name.startswith("headless_afl_arm9_blob")
+
+
 def find_fuzzer_stats(out_dir: Path) -> Path | None:
     direct = out_dir / "fuzzer_stats"
     if direct.is_file():
@@ -160,9 +234,13 @@ def detect_from_fuzzer_stats(out_dir: Path) -> tuple[str | None, str | None, str
     try:
         parts = shlex.split(cmdline)
         for i, part in enumerate(parts):
-            if part.endswith("headless_afl_arm9_blob") and i + 1 < len(parts):
-                base_rom = parts[i + 1]
-                break
+            if not is_harness_target(part):
+                continue
+            for cand in parts[i + 1:]:
+                if looks_like_base_rom(cand):
+                    base_rom = cand
+                    break
+            break
     except Exception:
         base_rom = None
     return profile, sanitizer, preset, base_rom
@@ -220,6 +298,47 @@ def parse_sanitizer_list(value: str) -> list[str]:
     if not result:
         die("--sanitizers must include at least one sanitizer")
     return result
+
+
+def resolve_sanitizer_list(args) -> list[str]:
+    if getattr(args, "sanitizers", None):
+        return parse_sanitizer_list(args.sanitizers)
+    if getattr(args, "sanitizer", AUTO) != AUTO:
+        sanitizer = args.sanitizer
+        if sanitizer == "none":
+            return []
+        if sanitizer not in SANITIZERS:
+            die(f"Unknown sanitizer: {sanitizer}")
+        return [sanitizer]
+    return ["asan-ubsan", "cfi"]
+
+
+def ensure_env_opt(env: dict, var: str, opt: str) -> None:
+    key = opt.split("=", 1)[0]
+    existing = env.get(var, "")
+    opts = [o for o in existing.split(":") if o]
+    for i, current in enumerate(opts):
+        if current.split("=", 1)[0] == key:
+            opts[i] = opt
+            break
+    else:
+        opts.append(opt)
+    env[var] = ":".join(opts)
+
+
+def apply_repro_sanitizer_env(env: dict, sanitizer: str) -> None:
+    if sanitizer == "none":
+        return
+    if "asan" in sanitizer:
+        ensure_env_opt(env, "ASAN_OPTIONS", "detect_leaks=0")
+        ensure_env_opt(env, "ASAN_OPTIONS", "symbolize=1")
+    if "ubsan" in sanitizer or sanitizer == "cfi":
+        ensure_env_opt(env, "UBSAN_OPTIONS", "print_stacktrace=1")
+        ensure_env_opt(env, "UBSAN_OPTIONS", "symbolize=1")
+    if "LLVM_SYMBOLIZER_PATH" not in env:
+        symbolizer = shutil.which("llvm-symbolizer")
+        if symbolizer:
+            env["LLVM_SYMBOLIZER_PATH"] = symbolizer
 
 
 def save_meta(out_dir: Path, meta: dict, *, dry_run=False):
@@ -331,6 +450,8 @@ def cmd_fuzz(args):
         sanitizer = "none"
     else:
         profile, sanitizer = resolve_profile_sanitizer(args, out_dir)
+    if profile == "lto":
+        ensure_afl_lto_tools()
     preset = preset_for("afl", profile, sanitizer)
 
     cmake_build(preset, "headless_afl_arm9_blob",
@@ -459,7 +580,7 @@ def find_base_rom_for_repro(input_path: Path, fallback_out_dir: Path | None) -> 
             break
     if out_dir:
         _, _, _, base_rom = detect_from_fuzzer_stats(out_dir)
-        if base_rom:
+        if base_rom and looks_like_base_rom(base_rom):
             return base_rom
         meta = read_meta(out_dir)
         if meta and "base_rom" in meta:
@@ -482,7 +603,7 @@ def cmd_repro(args):
                 verbose=args.verbose)
 
     target = ROOT / "build" / preset / "headless_afl_arm9_blob"
-    if not target.is_file():
+    if not args.dry_run and not target.is_file():
         die(f"Repro target not found: {target}")
 
     base_rom = args.base_rom or find_base_rom_for_repro(input_path, out_dir_hint)
@@ -494,9 +615,121 @@ def cmd_repro(args):
         cmd += ["--time-limit-ms", str(args.time_limit_ms)]
     cmd += ["--timing", str(input_path)]
     env = os.environ.copy()
-    if sanitizer == "asan-ubsan":
-        env["ASAN_OPTIONS"] = "detect_leaks=0"
-    run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose, env=env)
+    apply_repro_sanitizer_env(env, sanitizer)
+    run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose, env=env, check=False)
+
+
+def iter_crash_inputs(out_dir: Path) -> list[Path]:
+    crash_inputs = []
+    for crash_dir in out_dir.glob("**/crashes"):
+        if not crash_dir.is_dir():
+            continue
+        for entry in crash_dir.iterdir():
+            if not entry.is_file():
+                continue
+            if entry.name.startswith("README"):
+                continue
+            crash_inputs.append(entry)
+    return sorted(crash_inputs)
+
+
+def cmd_repro_all(args):
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_dir():
+        die(f"Output dir not found: {out_dir}")
+
+    crash_inputs = iter_crash_inputs(out_dir)
+    if not crash_inputs:
+        die(f"No crash inputs found under: {out_dir}")
+
+    report_dir = Path(args.report_dir)
+    ensure_dir(report_dir)
+
+    profile = resolve_profile(args, out_dir)
+    sanitizers = resolve_sanitizer_list(args)
+
+    build_cache: dict[tuple[str, str], Path] = {}
+
+    def build_target(toolchain: str, sanitizer: str) -> Path:
+        key = (toolchain, sanitizer)
+        if key in build_cache:
+            return build_cache[key]
+        preset = preset_for(toolchain, profile, sanitizer)
+        if toolchain == "afl" and profile == "lto":
+            ensure_afl_lto_tools()
+        cmake_build(preset, "headless_afl_arm9_blob",
+                    clean_build=args.clean_build,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose)
+        target_path = ROOT / "build" / preset / "headless_afl_arm9_blob"
+        if not args.dry_run and not target_path.is_file():
+            die(f"Repro target not found: {target_path}")
+        build_cache[key] = target_path
+        return target_path
+
+    def is_crash_output(proc: subprocess.CompletedProcess) -> bool:
+        if proc.returncode != 0:
+            return True
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        crash_markers = [
+            "runtime error:",
+            "AddressSanitizer",
+            "LeakSanitizer",
+            "UndefinedBehaviorSanitizer",
+            "ERROR:",
+            "SUMMARY:",
+        ]
+        return any(marker in combined for marker in crash_markers)
+
+    toolchains = ["clean", "afl"]
+    sanitizer_order = ["none"] + sanitizers
+
+    for input_path in crash_inputs:
+        base_rom = args.base_rom or find_base_rom_for_repro(input_path, out_dir)
+        if not base_rom:
+            die(f"Base ROM not found for input: {input_path}")
+
+        crash_found = False
+        report_path = report_dir / f"{input_path.name}.txt"
+
+        for toolchain in toolchains:
+            for sanitizer in sanitizer_order:
+                target = build_target(toolchain, sanitizer)
+                cmd = [str(target), str(base_rom)]
+                if args.time_limit_ms:
+                    cmd += ["--time-limit-ms", str(args.time_limit_ms)]
+                cmd += ["--timing", str(input_path)]
+
+                env = os.environ.copy()
+                apply_repro_sanitizer_env(env, sanitizer)
+                proc = run_cmd(cmd, dry_run=args.dry_run, verbose=args.verbose, env=env, capture=True, check=False)
+                if args.dry_run:
+                    crash_found = True
+                    break
+                if is_crash_output(proc):
+                    content = [
+                        f"input: {input_path}",
+                        f"build: {toolchain}:{sanitizer}",
+                        "",
+                        "=== stdout ===",
+                        proc.stdout or "",
+                        "=== stderr ===",
+                        proc.stderr or "",
+                    ]
+                    report_path.write_text("\n".join(content).rstrip() + "\n")
+                    crash_found = True
+                    break
+            if crash_found:
+                break
+
+        if not crash_found and not args.dry_run:
+            attempts = ", ".join(f"{tc}:{san}" for tc in toolchains for san in sanitizer_order)
+            content = [
+                f"input: {input_path}",
+                "result: NO CRASH",
+                f"attempts: {attempts}",
+            ]
+            report_path.write_text("\n".join(content) + "\n")
 
 
 def cmd_qt(args):
@@ -624,6 +857,22 @@ def main() -> int:
     repro.add_argument("--base-rom", help="Base ROM path")
     repro.add_argument("--time-limit-ms", type=int, default=500, help="Override harness time limit")
     repro.set_defaults(func=cmd_repro)
+
+    repro_all = sub.add_parser(
+        "repro-all",
+        help="Reproduce all AFL++ crash inputs under an output dir",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_common(repro_all)
+    repro_all.add_argument("--out-dir", default=str(OUT_ROOT / "fuzz"),
+                           help="AFL++ output dir to scan for crashes")
+    repro_all.add_argument("--base-rom", help="Base ROM path")
+    repro_all.add_argument("--sanitizers",
+                           help="Comma list of sanitizers to try after the clean build (e.g. asan-ubsan,cfi)")
+    repro_all.add_argument("--time-limit-ms", type=int, default=500, help="Override harness time limit")
+    repro_all.add_argument("--report-dir", default=str(OUT_ROOT / "repro_all"),
+                           help="Directory to write repro reports")
+    repro_all.set_defaults(func=cmd_repro_all)
 
     qt = sub.add_parser(
         "qt",
